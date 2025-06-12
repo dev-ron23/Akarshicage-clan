@@ -29,17 +29,16 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # --- Constants ---
-BIRTHDAY_CHANNEL_ID = 1381528007545716809
-BIRTHDAY_ROLE_ID = 1382591457403211796
-STATUS_CHANNEL_ID = 1382683598314016768  # Main status board channel
-SECONDARY_STATUS_CHANNEL_ID = 1382683598314016768  # Secondary status board channel
+# IMPORTANT: Replace these with your actual channel and role IDs
+BIRTHDAY_CHANNEL_ID = 1382590390770733186 # Your actual Birthday Channel ID
+BIRTHDAY_ROLE_ID = 1382591457403211796   # Your actual Birthday Role ID
+STATUS_CHANNEL_ID = 1382683598314016768  # Your actual Status Board Channel ID
 
 # --- Bot State Management ---
 class BotState:
     def __init__(self):
         self.user_statuses = {}  # Dictionary to store user_id: status
-        self.status_message = None  # Store the main status board message object
-        self.secondary_status_message = None  # Store the secondary status board message object
+        self.status_message = None  # Store the status board message object
 
 # --- Database Initialization ---
 def init_db():
@@ -54,7 +53,7 @@ init_db()
 # --- Bot Setup ---
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
+intents.message_content = True # Required for reading message content
 
 bot = commands.Bot(
     command_prefix='AC ',
@@ -85,16 +84,25 @@ def remove_from_db(user_id):
 
 # --- Status Board Update Function ---
 async def update_status_board():
-    # Update main status board
     channel = bot.get_channel(STATUS_CHANNEL_ID)
     if not channel:
-        logger.error(f"Status channel {STATUS_CHANNEL_ID} not found")
+        logger.error(f"Status channel {STATUS_CHANNEL_ID} not found. Please ensure the bot is in the guild and has access to this channel.")
+        # Log available channels for debugging
+        for guild in bot.guilds:
+            logger.info(f"Guild: {guild.name} (ID: {guild.id})")
+            channels = [f"{ch.name} (ID: {ch.id})" for ch in guild.channels]
+            logger.info(f"Available channels in {guild.name}: {', '.join(channels)}")
         return
 
-    # Update secondary status board
-    secondary_channel = bot.get_channel(SECONDARY_STATUS_CHANNEL_ID)
-    if not secondary_channel:
-        logger.error(f"Secondary status channel {SECONDARY_STATUS_CHANNEL_ID} not found")
+    # Check bot permissions in the status channel before proceeding
+    perms = channel.permissions_for(channel.guild.me)
+    if not perms.send_messages or not perms.embed_links or not perms.read_message_history:
+        missing_perms = []
+        if not perms.send_messages: missing_perms.append("Send Messages")
+        if not perms.embed_links: missing_perms.append("Embed Links")
+        if not perms.read_message_history: missing_perms.append("Read Message History")
+        logger.error(f"Bot lacks required permissions in status channel {STATUS_CHANNEL_ID}: {', '.join(missing_perms)}")
+        return
 
     # Create the status board embed
     embed = discord.Embed(
@@ -118,9 +126,21 @@ async def update_status_board():
         )
     else:
         # Sort users by display name for consistent ordering
+        # Ensure user objects are fetched if not in cache (get_user might return None)
+        active_users = []
+        for user_id, status in list(bot.state.user_statuses.items()): # Use list() for safe iteration during modification
+            user = bot.get_user(user_id)
+            if user:
+                active_users.append((user, status))
+            else:
+                # Clean up if user is no longer in the server or not found
+                bot.state.user_statuses.pop(user_id, None)
+                remove_from_db(user_id)
+                logger.info(f"Removed non-existent user {user_id} from status board.")
+
         sorted_statuses = sorted(
-            bot.state.user_statuses.items(),
-            key=lambda item: bot.get_user(item[0]).display_name.lower() if bot.get_user(item[0]) else ""
+            active_users,
+            key=lambda item: item[0].display_name.lower()
         )
 
         # Group statuses by category for a more organized display
@@ -133,14 +153,8 @@ async def update_status_board():
             "Outside 🚶": []
         }
 
-        for user_id, status in sorted_statuses:
-            user = bot.get_user(user_id)
-            if user:
-                status_groups[status].append(user)
-            else:
-                # Clean up if user is no longer in the server
-                bot.state.user_statuses.pop(user_id, None)
-                remove_from_db(user_id)
+        for user, status in sorted_statuses:
+            status_groups[status].append(user)
 
         # Add grouped statuses to the embed
         for status, users in status_groups.items():
@@ -171,39 +185,30 @@ async def update_status_board():
         inline=False
     )
 
-    # Update or send the main status message
+    # Update or send the status message
     try:
-        perms = channel.permissions_for(channel.guild.me)
-        required_perms = {
-            "send_messages": perms.send_messages,
-            "embed_links": perms.embed_links,
-            "read_message_history": perms.read_message_history
-        }
-        missing_perms = [perm for perm, has in required_perms.items() if not has]
-        if missing_perms:
-            logger.error(f"Bot lacks permissions in status channel {STATUS_CHANNEL_ID}: {', '.join(missing_perms)}")
-            return
-
         if bot.state.status_message:
             try:
                 fetched_message = await channel.fetch_message(bot.state.status_message.id)
                 if fetched_message:
                     await fetched_message.edit(embed=embed)
                     bot.state.status_message = fetched_message
-                else:
+                else: # Message deleted, send a new one
                     bot.state.status_message = await channel.send(embed=embed)
-            except discord.NotFound:
+            except discord.NotFound: # Message was deleted by someone else
                 bot.state.status_message = await channel.send(embed=embed)
             except discord.Forbidden:
-                logger.error(f"Bot lacks permission to edit status message in {channel.id}")
+                logger.error(f"Bot lacks permission to edit status message in {channel.id}. Attempting to send new one.")
                 bot.state.status_message = await channel.send(embed=embed)
             except Exception as e:
-                logger.error(f"Error editing status message: {e}. Sending new one.")
+                logger.error(f"Error editing status message: {e}. Sending new one.", exc_info=True)
                 bot.state.status_message = await channel.send(embed=embed)
         else:
+            # Try to find an existing status board message by the bot
             found_existing = False
-            async for msg in channel.history(limit=50):
-                if msg.author == bot.user and msg.embeds and msg.embeds[0].title == "🌟 ～ꗥ❀ 𝐀𝐑𝐀𝐒𝐇𝐈𝐊𝐀𝐆𝐄 𝐂𝐋𝐀𝐍 ❀ꗥ～ Status Board":
+            async for msg in channel.history(limit=50): # Look back 50 messages
+                if msg.author == bot.user and msg.embeds and \
+                   msg.embeds[0].title == "🌟 ～ꗥ❀ 𝐀𝐑𝐀𝐒𝐇𝐈𝐊𝐀𝐆𝐄 𝐂𝐋𝐀𝐍 ❀ꗥ～ Status Board":
                     bot.state.status_message = msg
                     await msg.edit(embed=embed)
                     found_existing = True
@@ -212,55 +217,9 @@ async def update_status_board():
                 bot.state.status_message = await channel.send(embed=embed)
 
     except discord.Forbidden as e:
-        logger.error(f"Bot lacks permissions to update status board in {channel.id}: {e}")
+        logger.error(f"Bot lacks permissions to send messages or embed links in status channel {channel.id}: {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"Critical error updating status board: {e}")
-
-    # Update or send the secondary status message (same embed)
-    if secondary_channel:
-        try:
-            perms = secondary_channel.permissions_for(secondary_channel.guild.me)
-            required_perms = {
-                "send_messages": perms.send_messages,
-                "embed_links": perms.embed_links,
-                "read_message_history": perms.read_message_history
-            }
-            missing_perms = [perm for perm, has in required_perms.items() if not has]
-            if missing_perms:
-                logger.error(f"Bot lacks permissions in secondary status channel {SECONDARY_STATUS_CHANNEL_ID}: {', '.join(missing_perms)}")
-                return
-
-            if bot.state.secondary_status_message:
-                try:
-                    fetched_message = await secondary_channel.fetch_message(bot.state.secondary_status_message.id)
-                    if fetched_message:
-                        await fetched_message.edit(embed=embed)
-                        bot.state.secondary_status_message = fetched_message
-                    else:
-                        bot.state.secondary_status_message = await secondary_channel.send(embed=embed)
-                except discord.NotFound:
-                    bot.state.secondary_status_message = await secondary_channel.send(embed=embed)
-                except discord.Forbidden:
-                    logger.error(f"Bot lacks permission to edit secondary status message in {secondary_channel.id}")
-                    bot.state.secondary_status_message = await secondary_channel.send(embed=embed)
-                except Exception as e:
-                    logger.error(f"Error editing secondary status message: {e}. Sending new one.")
-                    bot.state.secondary_status_message = await secondary_channel.send(embed=embed)
-            else:
-                found_existing = False
-                async for msg in secondary_channel.history(limit=50):
-                    if msg.author == bot.user and msg.embeds and msg.embeds[0].title == "🌟 ～ꗥ❀ 𝐀𝐑𝐀𝐒𝐇𝐈𝐊𝐀𝐆𝐄 𝐂𝐋𝐀𝐍 ❀ꗥ～ Status Board":
-                        bot.state.secondary_status_message = msg
-                        await msg.edit(embed=embed)
-                        found_existing = True
-                        break
-                if not found_existing:
-                    bot.state.secondary_status_message = await secondary_channel.send(embed=embed)
-
-        except discord.Forbidden as e:
-            logger.error(f"Bot lacks permissions to update secondary status board in {secondary_channel.id}: {e}")
-        except Exception as e:
-            logger.error(f"Critical error updating secondary status board: {e}")
+        logger.error(f"Critical error updating status board: {e}", exc_info=True)
 
 # --- Status Commands with Creative Auto-Responders ---
 @bot.hybrid_command(name="srn", description="Set status to Studying Right Now")
@@ -445,7 +404,7 @@ async def help_command(ctx):
         name="🔧 How It Works",
         value=(
             "1. Use a status command (e.g., `AC srn`) to set your status.\n"
-            "2. Your status appears on the **Status Board** in the designated channels.\n"
+            "2. Your status appears on the **Status Board** in the designated channel.\n"
             "3. Your command message deletes after 5 seconds, and my response vanishes after 10 seconds—keeping things tidy! 🧹\n"
             "4. Update or clear your status anytime to keep the clan in the loop! 🌟"
         ),
@@ -456,7 +415,7 @@ async def help_command(ctx):
     embed.add_field(
         name="📍 Where to Find the Status Board",
         value=(
-            f"Check out the Status Board in <#{STATUS_CHANNEL_ID}> and <#{SECONDARY_STATUS_CHANNEL_ID}>! "
+            f"Check out the Status Board in <#{STATUS_CHANNEL_ID}>! "
             "It updates in real-time to reflect the clan’s current vibes. 🌈"
         ),
         inline=False
@@ -469,49 +428,114 @@ async def help_command(ctx):
 # --- Event Handlers ---
 @bot.event
 async def on_ready():
-    logger.info(f'Logged in as {bot.user}')
+    logger.info(f'Logged in as {bot.user} (ID: {bot.user.id})')
     await bot.change_presence(status=discord.Status.online, activity=discord.Game(name="AC help | Arashikage Clan"))
 
+    # Log guilds the bot is in for debugging
+    if not bot.guilds:
+        logger.error("Bot is not in any guilds. Please invite the bot to your server.")
+        return
+    for guild in bot.guilds:
+        logger.info(f"Connected to guild: {guild.name} (ID: {guild.id})")
+        # Ensure all channels are fetched or cached to prevent "channel not found" errors
+        # for channel in guild.channels: # This line helps populate cache
+        #     pass
+        channels_info = [f"{ch.name} (ID: {ch.id})" for ch in guild.channels]
+        logger.info(f"Channels in {guild.name}: {', '.join(channels_info)}")
+
+
+    # Ensure guilds are fully loaded before proceeding
+    await bot.wait_until_ready()
+
     load_from_db()
+    # Call update_status_board with a delay to ensure all caches are populated
+    await asyncio.sleep(5) # Small delay to ensure channel cache is ready
     await update_status_board()
 
     try:
-        synced = await bot.tree.sync()
+        # Syncing commands globally might take time or fail if too many guilds
+        # Consider guild-specific sync for testing or larger bots
+        synced = await bot.tree.sync() # Syncs global commands
         logger.info(f"Synced {len(synced)} slash command(s)")
     except Exception as e:
-        logger.error(f"Failed to sync commands: {e}")
+        logger.error(f"Failed to sync commands: {e}", exc_info=True)
+
 
 @bot.event
 async def on_message(message):
+    # Ignore messages from the bot itself
     if message.author.bot or message.author == bot.user:
         return
 
+    # Check if message is in the birthday channel
     if message.channel.id == BIRTHDAY_CHANNEL_ID:
+        # Check bot's permissions in THIS specific channel
+        perms = message.channel.permissions_for(message.guild.me)
+        if not perms.send_messages or not perms.embed_links:
+            missing_perms = []
+            if not perms.send_messages: missing_perms.append("Send Messages")
+            if not perms.embed_links: missing_perms.append("Embed Links")
+            logger.error(f"Bot lacks required permissions in birthday channel {BIRTHDAY_CHANNEL_ID}: {', '.join(missing_perms)}")
+            await message.channel.send(f"⚠️ I don't have enough permissions here! Please grant me 'Send Messages' and 'Embed Links' to post birthday messages.")
+            return
+
+        # Check if message contains birthday role mention
         role_mention = f'<@&{BIRTHDAY_ROLE_ID}>'
         if role_mention in message.content:
+            # Extract user ID from message using regex
             user_mention_pattern = r'<@!?(\d+)>'
             user_ids = re.findall(user_mention_pattern, message.content)
+
+            # Filter out role mentions and keep only user mentions
             user_ids = [uid for uid in user_ids if int(uid) != BIRTHDAY_ROLE_ID]
 
             if user_ids:
                 try:
                     user_id = int(user_ids[0])
+                    # Fetch the member to ensure you get the display_avatar (guild-specific or global)
                     user = await message.guild.fetch_member(user_id)
-                    if user:
-                        embed = discord.Embed(
-                            title=f"🎉 {user.display_name}'s Birthday Celebration!",
-                            description=f"Wishing you a fantastic birthday, {user.mention}! 🎂 Let’s make it a memorable day! 🥳",
-                            color=discord.Color.purple(),
-                            timestamp=datetime.now(timezone.utc)
-                        )
-                        embed.set_image(url=user.display_avatar.url)
-                        embed.set_footer(text="Another trip around the sun! 🌟")
-                        await message.channel.send(embed=embed)
-                except (discord.errors.NotFound, discord.errors.Forbidden, ValueError) as e:
-                    logger.error(f"Error fetching user or sending birthday message: {e}")
 
+                    if user:
+                        # Create embed with user's profile picture
+                        embed = discord.Embed(
+                            title=f"🎉 Happy Birthday, {user.display_name}! 🎉", # Enhanced title
+                            color=discord.Color.purple(),
+                            description=f"Wishing a fantastic day to {user.mention}! May your year be filled with joy, success, and epic adventures! 🎂✨"
+                        )
+                        # Set the image to the user's display avatar (which includes guild avatars)
+                        embed.set_image(url=user.display_avatar.url)
+                        embed.set_footer(text="Celebrating another trip around the sun with the Arashikage Clan!")
+
+                        # Log the action
+                        logger.info(f"Sending birthday embed for user {user.id} in channel {BIRTHDAY_CHANNEL_ID} (Avatar URL: {user.display_avatar.url})")
+
+                        # Send the embed in the birthday channel
+                        await message.channel.send(embed=embed)
+
+                except discord.errors.NotFound as e:
+                    logger.error(f"User with ID {user_id} not found in guild {message.guild.id} during birthday message: {e}", exc_info=True)
+                    # Optional: Respond to channel if user not found, for debugging
+                    await message.channel.send(f"⚠️ Couldn't find the user for that birthday mention. Make sure it's a valid user!")
+                except discord.errors.Forbidden as e:
+                    logger.error(f"Bot lacks permissions to send birthday embed in channel {BIRTHDAY_CHANNEL_ID}: {e}", exc_info=True)
+                    # This specific error is already caught by the initial permission check, but good to have.
+                except Exception as e:
+                    logger.error(f"Unexpected error sending birthday message for user {user_id}: {e}", exc_info=True)
+                    # Optional: General error message
+                    await message.channel.send(f"An unexpected error occurred while processing the birthday message for <@{user_id}>.")
+
+    # Process commands if any
     await bot.process_commands(message)
+
+@bot.event
+async def on_error(event, *args, **kwargs):
+    logger.error(f"Unhandled error in event {event}: {args} {kwargs}", exc_info=True)
 
 # --- Start the Bot ---
 if __name__ == "__main__":
-    bot.run(BOT_TOKEN)
+    try:
+        bot.run(BOT_TOKEN)
+    except discord.errors.LoginFailure as e:
+        logger.error(f"Failed to log in: {e}. Please check your bot token.", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error while starting bot: {e}", exc_info=True)
