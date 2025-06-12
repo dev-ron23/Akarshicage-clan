@@ -429,7 +429,14 @@ async def help_command(ctx):
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user} (ID: {bot.user.id})')
-    await bot.change_presence(status=discord.Status.online, activity=discord.Game(name="AC help | Arashikage Clan"))
+    # Set bot status to streaming
+    await bot.change_presence(
+        status=discord.Status.online,
+        activity=discord.Streaming(
+            name="Accessed by ꧁• RON •꧂",
+            url="https://www.twitch.tv/yourchannel"  # Replace with your Twitch or YouTube URL
+        )
+    )
 
     # Log guilds the bot is in for debugging
     if not bot.guilds:
