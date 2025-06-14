@@ -7,6 +7,10 @@ import asyncio
 import os
 from dotenv import load_dotenv
 import logging
+from flask import Flask
+import threading
+
+app = Flask(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -533,16 +537,30 @@ async def on_message(message):
 
     # Process commands if any
     await bot.process_commands(message)
+    
+    @app.route("/")
+def home():
+    return "Arashikage Bot is running!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
 
 @bot.event
 async def on_error(event, *args, **kwargs):
-    logger.error(f"Unhandled error in event {event}: {args} {kwargs}", exc_info=True)
-
-# --- Start the Bot ---
+    logger.error(f"Unhandled error in event {event}: {args} {kwargs}", exc_info=True
+    
+    # --- Start the Bot and Flask Server ---
 if __name__ == "__main__":
     try:
+        # Run Flask in a separate thread
+        flask_thread = threading.Thread(target=run_flask)
+        flask_thread.start()
+
+        # Start Discord bot
         bot.run(BOT_TOKEN)
+
     except discord.errors.LoginFailure as e:
         logger.error(f"Failed to log in: {e}. Please check your bot token.", exc_info=True)
     except Exception as e:
         logger.error(f"Unexpected error while starting bot: {e}", exc_info=True)
+        
