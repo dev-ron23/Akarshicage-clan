@@ -538,7 +538,7 @@ async def on_message(message):
     # Process commands if any
     await bot.process_commands(message)
     
-    @app.route("/")
+@app.route("/")
 def home():
     return "Arashikage Bot is running!"
 
@@ -547,9 +547,9 @@ def run_flask():
 
 @bot.event
 async def on_error(event, *args, **kwargs):
-    logger.error(f"Unhandled error in event {event}: {args} {kwargs}", exc_info=True
-    
-    # --- Start the Bot and Flask Server ---
+    logger.error(f"Unhandled error in event {event}: {args} {kwargs}", exc_info=True)
+
+# --- Start the Bot and Flask Server ---
 if __name__ == "__main__":
     try:
         # Run Flask in a separate thread
